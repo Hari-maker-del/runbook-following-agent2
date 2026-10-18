@@ -451,6 +451,7 @@ async def confirm_risky_step(request: ConfirmRequest):
 @app.post("/execute/pause")
 async def pause_execution(request: PauseResumeRequest):
     """Pause an active execution session."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -464,6 +465,7 @@ async def pause_execution(request: PauseResumeRequest):
 @app.post("/execute/resume")
 async def resume_execution(request: PauseResumeRequest):
     """Resume a paused execution session."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -478,6 +480,7 @@ async def resume_execution(request: PauseResumeRequest):
 @app.post("/execute/retry")
 async def retry_step(request: RetryRequest):
     """Retry a failed step."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
