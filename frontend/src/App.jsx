@@ -301,7 +301,14 @@ function App() {
     try {
       const sessionId = sessions[0]?.session_id || report?.session_id;
       if (!sessionId) throw new Error('No execution session exists yet. Run a runbook before exporting a report.');
-      const response = await fetch(`${API_BASE}/report/pdf?session_id=${encodeURIComponent(sessionId)}`);
+      const token = sessionStorage.getItem('runbook_access_token');
+      const response = await fetch(`${API_BASE}/report/pdf?session_id=${encodeURIComponent(sessionId)}`, {
+        headers: token ? { Authorization: 'Bearer ' + token } : {},
+      });
+      if (response.status === 401 && token) {
+        sessionStorage.removeItem('runbook_access_token');
+        window.dispatchEvent(new Event('runbook-auth-expired'));
+      }
       if (!response.ok) throw new Error(`Report request failed (${response.status})`);
       const blob = await response.blob(), url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = 'runbook-report.pdf'; a.click();
