@@ -634,6 +634,14 @@ async def stream_execution(session_id: str, request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+def _session_log_exists(session_id: str, owner_id: str) -> bool:
+    from logger import _session_log_path
+    try:
+        return _session_log_path(session_id, owner_id).is_file()
+    except ValueError:
+        return False
+
+
 @app.get("/logs")
 async def get_logs(request: Request, session_id: Optional[str] = Query(None)):
     """Return execution logs, optionally filtered by session."""
