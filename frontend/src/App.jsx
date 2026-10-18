@@ -132,8 +132,9 @@ function App() {
         const entries = Array.isArray(d) ? d : (d?.logs || d?.entries || d?.items || []);
         setLogs(entries);
         const availableSessions = Array.isArray(d?.sessions) ? d.sessions : [];
-        setSessions(availableSessions);
-        const latestSession = availableSessions[0]?.session_id;
+        const orderedSessions = [...availableSessions].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        setSessions(orderedSessions);
+        const latestSession = orderedSessions[0]?.session_id;
         if (latestSession) {
           try { setReport(await api(`/report?session_id=${encodeURIComponent(latestSession)}`)); }
           catch { setReport(null); }
@@ -166,7 +167,7 @@ function App() {
 
   const metrics = useMemo(() => {
     const obj = report && typeof report === 'object' ? report : {};
-    const total = obj.total_executions ?? obj.total_runs ?? obj.total ?? (Array.isArray(logs) ? logs.length : 0);
+    const total = obj.total_executions ?? obj.total_runs ?? obj.total ?? obj.total_steps ?? (Array.isArray(logs) ? logs.length : 0);
     const success = obj.success ?? obj.successful ?? obj.success_count ?? 0;
     const failed = obj.failed ?? obj.failure_count ?? obj.fail_count ?? 0;
     return { total, success, failed };
