@@ -12,10 +12,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 
+from auth import auth_enabled, authenticate, issue_token, verify_token
 from allowlist import classify_command
 from executor import execute_command
 from logger import append_log, create_session_log, get_session_logs, list_sessions
@@ -59,6 +60,56 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def authenticate_api_requests(request: Request, call_next):
+    """Require a valid signed bearer token when server auth is configured."""
+    path = request.url.path
+    public_paths = {"/", "/auth/config", "/auth/login", "/openapi.json", "/docs", "/redoc"}
+    if request.method == "OPTIONS" or path in public_paths or path.startswith("/docs/"):
+        return await call_next(request)
+    if auth_enabled():
+        header = request.headers.get("authorization", "")
+        scheme, _, token = header.partition(" ")
+        username = verify_token(token) if scheme.lower() == "bearer" else None
+        if not username:
+            return Response(
+                content='{"detail":"Authentication required. Sign in to continue."}',
+                status_code=401,
+                media_type="application/json",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        request.state.username = username
+    else:
+        request.state.username = None
+    return await call_next(request)
+
+
+@app.get("/auth/config")
+async def authentication_config():
+    """Tell the frontend whether server-side login is configured."""
+    return {"enabled": auth_enabled(), "token_ttl_seconds": 28800}
+
+
+@app.post("/auth/login")
+async def login(request: Request):
+    """Exchange configured administrator credentials for a short-lived token."""
+    if not auth_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication is not configured. Set RUNBOOK_ADMIN_USERNAME, RUNBOOK_ADMIN_PASSWORD, and a 32+ character RUNBOOK_AUTH_SECRET on the backend.",
+        )
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid login payload") from exc
+    username = body.get("username") if isinstance(body, dict) else None
+    password = body.get("password") if isinstance(body, dict) else None
+    if not authenticate(username, password):
+        # Same response for unknown usernames and incorrect passwords.
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {"access_token": issue_token(username), "token_type": "bearer", "expires_in": 28800, "username": username}
 
 
 @app.middleware("http")
