@@ -45,8 +45,8 @@ def test_parser_sorts_steps_and_ignores_duplicate_step_numbers():
     content = """
 # Maintenance
 3. date
-1. pwd
 1. rm -rf temp
+1. pwd
 2. echo ready
 """
     steps = parse_markdown_content(content)
