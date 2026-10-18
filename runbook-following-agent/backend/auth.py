@@ -53,14 +53,13 @@ def issue_token(subject: str) -> str:
 
 
 def verify_token(token: str) -> Optional[str]:
-    if not _admin_configured() or not isinstance(token, str) or token.count(".") != 1:
-        # Account-only deployments still need the same signing secret.
-        if not os.getenv("RUNBOOK_AUTH_SECRET") or len(os.getenv("RUNBOOK_AUTH_SECRET", "")) < 32:
-            return None
-    payload, signature = token.split(".", 1) if token.count(".") == 1 else ("", "")
-    if not payload:
+    if not isinstance(token, str) or token.count(".") != 1:
         return None
-    secret = os.environ["RUNBOOK_AUTH_SECRET"].encode("utf-8")
+    secret_value = os.getenv("RUNBOOK_AUTH_SECRET", "")
+    if len(secret_value) < 32:
+        return None
+    payload, signature = token.split(".", 1)
+    secret = secret_value.encode("utf-8")
     expected = _b64(hmac.new(secret, payload.encode("ascii"), hashlib.sha256).digest())
     if not secrets.compare_digest(signature, expected):
         return None
