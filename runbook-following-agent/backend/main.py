@@ -323,6 +323,7 @@ async def _run_step(session_id: str, step: RunbookStep, force: bool = False) -> 
         stderr=output["stderr"],
         exit_code=output["exit_code"],
         execution_time_ms=output["execution_time_ms"],
+        owner_id=session.get("owner_id", "legacy-admin"),
     )
 
     step.status = status
@@ -534,7 +535,7 @@ async def confirm_risky_step(request: ConfirmRequest, http_request: Request):
             request.step,
             step_obj.command,
             StepStatus.SKIPPED.value,
-            message=result.message,
+            message=result.message, owner_id=session.get("owner_id", "legacy-admin"),
         )
         step_obj.status = StepStatus.SKIPPED
         _upsert_result(session, result)
