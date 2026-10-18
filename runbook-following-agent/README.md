@@ -148,16 +148,29 @@ after eight hours, the frontend keeps the token only in session storage, and
 the Settings screen has a sign-out action. The login endpoints are
 `GET /auth/config` and `POST /auth/login`.
 
-**Important:** if these variables are absent or the signing secret is shorter
-than 32 characters, authentication remains disabled for backwards-compatible
-local development. The dashboard indicates this in Settings. Set the variables
-on the hosted backend to activate the login gate.
+### Multiple user accounts and workspace isolation
 
-This milestone provides a single configured administrator identity. It does
-not yet provide self-service registration, multiple user accounts, or durable
-per-user runbook/session ownership; those require a persistent identity store
-and data-isolation migration before the app should be exposed as a multi-tenant
-service.
+For production multi-user mode, configure a **dedicated persistent PostgreSQL
+database** and set `DATABASE_URL` on Render, in addition to the three
+authentication variables above. Use a managed database URL with TLS as supplied
+by the provider. The backend normalizes `postgres://` and `postgresql://` URLs
+to the psycopg SQLAlchemy driver.
+
+When configured, the login screen offers account registration. Usernames must
+be 3–32 characters; passwords must be 12–256 characters. Passwords are stored
+as salted PBKDF2-SHA256 hashes. Account tokens are signed and expire after
+eight hours. Each account receives a separate runbook directory and separate
+execution-log/report directory; session-control endpoints return 404 when a
+session belongs to another account. The existing environment-configured
+administrator remains available and retains access to the legacy workspace.
+
+**Do not enable public registration without `DATABASE_URL`.** A local SQLite
+fallback is intended only for development (`RUNBOOK_ALLOW_LOCAL_USER_DB=1`)
+and is not durable on Render. The current runbook and log files still live on
+the service filesystem; for durable production workspaces, configure a
+persistent storage volume or move runbook/log storage to managed object storage
+before relying on those files across redeploys. Account records themselves are
+stored in PostgreSQL.
 
 ## Security
 

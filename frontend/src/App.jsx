@@ -25,30 +25,38 @@ async function api(path, options = {}) {
   return data;
 }
 
-function LoginScreen({ onSuccess }) {
+function LoginScreen({ onSuccess, registrationEnabled = false }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [mode, setMode] = useState('login');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const isRegistering = mode === 'register';
   const submit = async (event) => {
     event.preventDefault(); setBusy(true); setError('');
     try {
-      const result = await api('/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+      const result = await api(isRegistering ? '/auth/register' : '/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
       onSuccess(result.access_token);
-    } catch (e) { setError(e.message || 'Sign in failed'); }
+    } catch (e) { setError(e.message || (isRegistering ? 'Account creation failed' : 'Sign in failed')); }
     finally { setBusy(false); }
   };
   return <main style={{minHeight:'100vh',display:'grid',placeItems:'center',padding:24,background:'#080d18',color:'#edf3ff'}}>
     <form onSubmit={submit} style={{width:'min(420px,100%)',padding:32,border:'1px solid #26354d',borderRadius:22,background:'#101a2a',boxShadow:'0 28px 90px #0007'}}>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:28}}><div style={{width:44,height:44,display:'grid',placeItems:'center',borderRadius:13,background:'#1e4da5'}}><LockKeyhole size={22}/></div><div><strong style={{fontSize:21}}>runbook.os</strong><div style={{fontSize:11,letterSpacing:2,color:'#8ea6c8'}}>SECURE WORKSPACE</div></div></div>
-      <h1 style={{fontSize:28,margin:'0 0 8px'}}>Welcome back</h1><p style={{color:'#9baec8',lineHeight:1.6,margin:'0 0 24px'}}>Sign in to access runbooks, execution controls, logs, and reports.</p>
+      <h1 style={{fontSize:28,margin:'0 0 8px'}}>{isRegistering ? 'Create your workspace' : 'Welcome back'}</h1><p style={{color:'#9baec8',lineHeight:1.6,margin:'0 0 24px'}}>{isRegistering ? 'Create a personal account. Your runbooks, logs, and reports are separated from other users.' : 'Sign in to access your private runbooks, execution controls, logs, and reports.'}</p>
       <label style={{display:'block',fontSize:13,marginBottom:7,color:'#b8c8df'}} htmlFor="runbook-username">Username</label>
-      <input id="runbook-username" autoComplete="username" value={username} onChange={e=>setUsername(e.target.value)} required style={{width:'100%',boxSizing:'border-box',padding:'13px 14px',marginBottom:17,borderRadius:10,border:'1px solid #31425d',background:'#0a1220',color:'#fff',fontSize:15}}/>
+      <input id="runbook-username" autoComplete="username" minLength={isRegistering ? 3 : undefined} maxLength={32} value={username} onChange={e=>setUsername(e.target.value)} required style={{width:'100%',boxSizing:'border-box',padding:'13px 14px',marginBottom:17,borderRadius:10,border:'1px solid #31425d',background:'#0a1220',color:'#fff',fontSize:15}}/>
       <label style={{display:'block',fontSize:13,marginBottom:7,color:'#b8c8df'}} htmlFor="runbook-password">Password</label>
-      <input id="runbook-password" type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} required style={{width:'100%',boxSizing:'border-box',padding:'13px 14px',marginBottom:17,borderRadius:10,border:'1px solid #31425d',background:'#0a1220',color:'#fff',fontSize:15}}/>
+      <input id="runbook-password" type="password" autoComplete={isRegistering ? 'new-password' : 'current-password'} minLength={isRegistering ? 12 : undefined} maxLength={256} value={password} onChange={e=>setPassword(e.target.value)} required style={{width:'100%',boxSizing:'border-box',padding:'13px 14px',marginBottom:17,borderRadius:10,border:'1px solid #31425d',background:'#0a1220',color:'#fff',fontSize:15}}/>
+      {isRegistering && <p style={{fontSize:12,color:'#8ea6c8',margin:'-6px 0 14px'}}>Use 12 or more characters. Usernames can contain letters, numbers, dots, dashes, and underscores.</p>}
       {error && <p role="alert" style={{color:'#ff9e9e',fontSize:13,lineHeight:1.5}}>{error}</p>}
-      <button disabled={busy} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:9,padding:14,border:0,borderRadius:10,background:'#3478f6',color:'#fff',fontWeight:700,fontSize:15,cursor:busy?'wait':'pointer'}}>{busy ? 'Signing in…' : 'Sign in securely'} <ArrowRight size={16}/></button>
-      <p style={{fontSize:12,color:'#7f94b3',lineHeight:1.6,margin:'18px 0 0'}}>Access tokens expire after 8 hours. Credentials are validated by the backend and are never stored in this browser.</p>
+      <button disabled={busy} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:9,padding:14,border:0,borderRadius:10,background:'#3478f6',color:'#fff',fontWeight:700,fontSize:15,cursor:busy?'wait':'pointer'}}>{busy ? (isRegistering ? 'Creating account…' : 'Signing in…') : (isRegistering ? 'Create account' : 'Sign in securely')} <ArrowRight size={16}/></button>
+      {registrationEnabled && <button type="button" onClick={()=>{setMode(isRegistering?'login':'register');setError('');}} style={{width:'100%',marginTop:14,padding:10,border:0,background:'transparent',color:'#9fc0ff',fontSize:13,cursor:'pointer'}}>{isRegistering ? 'Already have an account? Sign in' : 'New here? Create a personal account'}</button>}
+      <p style={{fontSize:12,color:'#7f94b3',lineHeight:1.6,margin:'18px 0 0'}}>Access tokens expire after 8 hours. Passwords are stored as salted hashes, not in plain text.</p>
     </form>
   </main>;
 }
@@ -158,6 +166,7 @@ function App() {
   const [showUpload, setShowUpload] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
+  const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [authToken, setAuthToken] = useState(() => sessionStorage.getItem('runbook_access_token') || '');
 
   const refreshData = useCallback(async () => {
@@ -192,6 +201,7 @@ function App() {
     fetch(API_BASE + '/auth/config').then(r => r.ok ? r.json() : { enabled: false }).catch(() => ({ enabled: false })).then(config => {
       if (!active) return;
       setAuthRequired(Boolean(config.enabled));
+      setRegistrationEnabled(Boolean(config.registration_enabled));
       setAuthToken(sessionStorage.getItem('runbook_access_token') || '');
       setAuthChecked(true);
     });
@@ -320,7 +330,7 @@ function App() {
   const statusLabel = apiStatus === 'online' ? 'API connected' : apiStatus === 'offline' ? 'API unavailable' : 'Connecting…';
 
   if (!authChecked) return <main style={{minHeight:'100vh',display:'grid',placeItems:'center',background:'#080d18',color:'#b8c8df'}}>Checking workspace security…</main>;
-  if (authRequired && !authToken) return <LoginScreen onSuccess={(token) => { sessionStorage.setItem('runbook_access_token', token); setAuthToken(token); refreshData(); }} />;
+  if (authRequired && !authToken) return <LoginScreen registrationEnabled={registrationEnabled} onSuccess={(token) => { sessionStorage.setItem('runbook_access_token', token); setAuthToken(token); refreshData(); }} />;
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>

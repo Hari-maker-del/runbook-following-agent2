@@ -1,6 +1,7 @@
 """Execution logging to JSON files in backend/logs/."""
 import json
 import re
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -11,9 +12,17 @@ from models import LogEntry
 LOGS_DIR = Path(__file__).parent / "logs"
 
 
-def _ensure_logs_dir() -> Path:
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    return LOGS_DIR
+def _owner_logs_dir(owner_id: str = "legacy-admin") -> Path:
+    if owner_id == "legacy-admin":
+        return LOGS_DIR
+    key = hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:24]
+    return LOGS_DIR / "workspaces" / key
+
+
+def _ensure_logs_dir(owner_id: str = "legacy-admin") -> Path:
+    path = _owner_logs_dir(owner_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _validate_session_id(session_id: str) -> str:
@@ -24,16 +33,16 @@ def _validate_session_id(session_id: str) -> str:
         raise ValueError("Invalid session identifier") from exc
 
 
-def _session_log_path(session_id: str) -> Path:
-    return _ensure_logs_dir() / f"{_validate_session_id(session_id)}.json"
+def _session_log_path(session_id: str, owner_id: str = "legacy-admin") -> Path:
+    return _ensure_logs_dir(owner_id) / f"{_validate_session_id(session_id)}.json"
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_session_log(session_id: str, filename: str) -> None:
-    path = _session_log_path(session_id)
+def create_session_log(session_id: str, filename: str, owner_id: str = "legacy-admin") -> None:
+    path = _session_log_path(session_id, owner_id)
     data = {"session_id": _validate_session_id(session_id), "filename": filename, "created_at": _now_iso(), "entries": []}
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -41,14 +50,14 @@ def create_session_log(session_id: str, filename: str) -> None:
 def append_log(
     session_id: str, step: int, command: str, status: str, stdout: str = "",
     stderr: str = "", exit_code: Optional[int] = None, execution_time_ms: float = 0,
-    message: str = "",
+    message: str = "", owner_id: str = "legacy-admin",
 ) -> LogEntry:
     entry = LogEntry(
         timestamp=_now_iso(), session_id=_validate_session_id(session_id), step=step,
         command=command, status=status, stdout=stdout, stderr=stderr,
         exit_code=exit_code, execution_time_ms=execution_time_ms, message=message,
     )
-    path = _session_log_path(session_id)
+    path = _session_log_path(session_id, owner_id)
     if path.exists():
         data = json.loads(path.read_text(encoding="utf-8"))
     else:
@@ -59,11 +68,11 @@ def append_log(
     return entry
 
 
-def get_session_logs(session_id: Optional[str] = None) -> list[dict]:
-    _ensure_logs_dir()
+def get_session_logs(session_id: Optional[str] = None, owner_id: str = "legacy-admin") -> list[dict]:
+    _ensure_logs_dir(owner_id)
     if session_id:
         try:
-            path = _session_log_path(session_id)
+            path = _session_log_path(session_id, owner_id)
         except ValueError:
             return []
         if not path.exists():
@@ -72,7 +81,7 @@ def get_session_logs(session_id: Optional[str] = None) -> list[dict]:
         return data.get("entries", [])
 
     all_entries: list[dict] = []
-    for log_file in sorted(LOGS_DIR.glob("*.json"), reverse=True):
+    for log_file in sorted(_ensure_logs_dir(owner_id).glob("*.json"), reverse=True):
         try:
             data = json.loads(log_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -83,10 +92,10 @@ def get_session_logs(session_id: Optional[str] = None) -> list[dict]:
     return all_entries
 
 
-def list_sessions() -> list[dict]:
-    _ensure_logs_dir()
+def list_sessions(owner_id: str = "legacy-admin") -> list[dict]:
+    _ensure_logs_dir(owner_id)
     sessions = []
-    for log_file in sorted(LOGS_DIR.glob("*.json"), reverse=True):
+    for log_file in sorted(_ensure_logs_dir(owner_id).glob("*.json"), reverse=True):
         try:
             data = json.loads(log_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
