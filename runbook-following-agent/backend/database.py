@@ -106,5 +106,8 @@ def get_user(user_id: str) -> Optional[dict]:
 
 
 def registration_enabled() -> bool:
-    # Avoid silently putting production user records on an ephemeral filesystem.
-    return bool(os.getenv("DATABASE_URL", "").strip()) or os.getenv("RUNBOOK_ALLOW_LOCAL_USER_DB") == "1"
+    # Do not enable account creation without a signing secret and durable DB.
+    secret_ok = len(os.getenv("RUNBOOK_AUTH_SECRET", "")) >= 32
+    durable_db = bool(os.getenv("DATABASE_URL", "").strip())
+    local_opt_in = os.getenv("RUNBOOK_ALLOW_LOCAL_USER_DB") == "1"
+    return secret_ok and (durable_db or local_opt_in)
