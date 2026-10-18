@@ -126,6 +126,39 @@ Steps 1–4 and 6–7 execute automatically. Step 5 (`rm`) triggers a **risky co
 
 ---
 
+## Authentication setup
+
+Authentication is available as an opt-in backend security layer. Configure these
+environment variables on the backend service (Render) before enabling it:
+
+- `RUNBOOK_ADMIN_USERNAME`: the administrator's sign-in name.
+- `RUNBOOK_ADMIN_PASSWORD`: a long, unique password.
+- `RUNBOOK_AUTH_SECRET`: a cryptographically random secret of at least 32 characters.
+
+Example for generating a signing secret locally:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+```
+
+Set the three values in the backend service's environment settings; never commit
+them to Git or put them in a `VITE_*` frontend variable. When configured, the
+API requires a signed Bearer token for operational endpoints. Tokens expire
+after eight hours, the frontend keeps the token only in session storage, and
+the Settings screen has a sign-out action. The login endpoints are
+`GET /auth/config` and `POST /auth/login`.
+
+**Important:** if these variables are absent or the signing secret is shorter
+than 32 characters, authentication remains disabled for backwards-compatible
+local development. The dashboard indicates this in Settings. Set the variables
+on the hosted backend to activate the login gate.
+
+This milestone provides a single configured administrator identity. It does
+not yet provide self-service registration, multiple user accounts, or durable
+per-user runbook/session ownership; those require a persistent identity store
+and data-isolation migration before the app should be exposed as a multi-tenant
+service.
+
 ## Security
 
 - **Allowlist-only auto-execution** — only predefined safe commands run without confirmation
