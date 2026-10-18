@@ -17,7 +17,7 @@ RISKY_PATTERNS: list[str] = [
 RISKY_PATTERN_REGEXES: list[re.Pattern] = [
     re.compile(r"\b" + re.escape(pattern) + r"\b") for pattern in RISKY_PATTERNS
 ]
-FORBIDDEN_SHELL_CHARS = re.compile(r"[;&|\x60$<>]")
+FORBIDDEN_SHELL_CHARS = re.compile(r"[;&|\x60$<>%^!\r\n]")
 # These can affect the host or service, not just the runbook workspace.
 NEVER_EXECUTE_BASES = {"sudo", "shutdown", "reboot", "systemctl", "format", "kill", "chmod"}
 
@@ -87,7 +87,7 @@ def classify_command(command: str) -> Literal["safe", "risky", "disallowed"]:
         if any(token in {"--no-preserve-root", "--preserve-root"} for token in tokens):
             return "disallowed"
         targets = [token for token in tokens[1:] if not token.startswith("-")]
-        if not targets:
+        if not targets or any(target in {".", "*"} for target in targets):
             return "disallowed"
         return "risky"
     return "safe"
