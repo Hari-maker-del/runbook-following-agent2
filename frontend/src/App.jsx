@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowDownRight, ArrowRight, ArrowUpRight, BookOpen,
   Check, CheckCircle2, ChevronDown, CircleHelp, Clock3, Command, Download,
   FileCode2, FileText, Gauge, GitBranch, History, LayoutDashboard, LifeBuoy,
-  LoaderCircle, LockKeyhole, Menu, MoreHorizontal, Play, Plus, RefreshCw,
+  LoaderCircle, LockKeyhole, Menu, MoreHorizontal, Pause, Play, Plus, RefreshCw, RotateCcw,
   Search, Settings2, ShieldCheck, Sparkles, Terminal, UploadCloud, Workflow, X,
   Zap
 } from 'lucide-react';
@@ -113,6 +113,8 @@ function App() {
   const [file, setFile] = useState(null);
   const [runbooks, setRunbooks] = useState([]);
   const [parsedRunbook, setParsedRunbook] = useState(null);
+  const [executionState, setExecutionState] = useState(null);
+  const [executionBusy, setExecutionBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState(null);
   const [search, setSearch] = useState('');
@@ -146,7 +148,25 @@ function App() {
       }
     } finally { setRefreshing(false); }
   }, []);
+
   useEffect(() => { refreshData(); }, [refreshData]);
+
+  useEffect(() => {
+    const sessionId = executionState && executionState.session_id;
+    if (!sessionId || ['completed', 'failed'].includes(executionState.status)) return;
+    let active = true;
+    const poll = async () => {
+      try {
+        const state = await api('/execute/state/' + encodeURIComponent(sessionId));
+        if (active) setExecutionState(state);
+      } catch (error) {
+        if (active && !/404/.test(error.message)) setNotice({ type: 'error', text: 'Execution status refresh failed: ' + error.message });
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 1800);
+    return () => { active = false; clearInterval(timer); };
+  }, [executionState && executionState.session_id, executionState && executionState.status]);
 
   const uploadRunbook = async (event) => {
     event.preventDefault();
@@ -177,6 +197,48 @@ function App() {
     const q = search.trim().toLowerCase();
     return logs.filter(item => !q || JSON.stringify(item).toLowerCase().includes(q)).slice(0, 8);
   }, [logs, search]);
+
+
+  const startExecution = async (filename) => {
+    if (!filename) return;
+    setExecutionBusy(true);
+    try {
+      const result = await api('/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename, start_from_step: 1, continue_on_failure: false })
+      });
+      setExecutionState(result.state || { session_id: result.session_id, status: 'running' });
+      setNotice({ type: 'success', text: 'Execution started for ' + filename + '. Watch the live state and approve risky steps explicitly.' });
+      setActive('Executions');
+      await refreshData();
+    } catch (error) {
+      setNotice({ type: 'error', text: 'Could not start execution: ' + error.message });
+    } finally { setExecutionBusy(false); }
+  };
+
+  const controlExecution = async (action, extra = {}) => {
+    if (!executionState || !executionState.session_id) return;
+    setExecutionBusy(true);
+    try {
+      const result = await api('/execute/' + action, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: executionState.session_id, ...extra })
+      });
+      if (result.state) setExecutionState((action === 'retry' || action === 'resume') ? { ...result.state, status: 'running' } : result.state);
+      else await refreshExecutionState();
+      setNotice({ type: 'success', text: action === 'confirm' ? (extra.approved ? 'Risky step approved.' : 'Risky step skipped.') : 'Execution ' + action + ' request completed.' });
+    } catch (error) {
+      setNotice({ type: 'error', text: 'Execution action failed: ' + error.message });
+    } finally { setExecutionBusy(false); }
+  };
+
+  const refreshExecutionState = async () => {
+    if (!executionState || !executionState.session_id) return;
+    try { setExecutionState(await api('/execute/state/' + encodeURIComponent(executionState.session_id))); }
+    catch (error) { setNotice({ type: 'error', text: 'Could not refresh execution state: ' + error.message }); }
+  };
 
   const downloadReport = async () => {
     try {
@@ -255,9 +317,9 @@ function App() {
           </section>
         </>}
 
-        {active === 'Runbooks' && <section className="page-section"><PageHeading title="Runbook library" subtitle="Import and prepare operational playbooks for execution." action={<button className="primary-button" onClick={() => setShowUpload(v => !v)}><Plus size={16}/> Upload runbook</button>}/>{showUpload && <form className="upload-card" onSubmit={uploadRunbook}><div className="upload-drop"><UploadCloud size={26}/><strong>Bring your runbook</strong><span>Markdown files (.md) with numbered operational steps</span><input type="file" accept=".md,text/markdown,text/plain" onChange={e => setFile(e.target.files?.[0] || null)}/>{file && <div className="selected-file"><FileCode2 size={15}/>{file.name}<button type="button" onClick={() => setFile(null)} aria-label="Remove file"><X size={14}/></button></div>}</div><button className="primary-button" disabled={uploading || !file}>{uploading ? <LoaderCircle className="spin" size={16}/> : <UploadCloud size={16}/>} {uploading ? 'Uploading…' : 'Upload and validate'}</button>{uploadResult && <pre className="result-preview">{JSON.stringify(uploadResult, null, 2)}</pre>}</form>}<div className="panel library-empty">{runbooks.length ? <><div className="panel-heading"><div><h3>Available runbooks</h3><p>Files currently stored by the backend</p></div><span className="soft-tag">{runbooks.length} files</span></div>{runbooks.map(item => <div className="setting-row" key={item.filename}><div className="setting-icon"><FileCode2 size={17}/></div><div><strong>{item.filename}</strong><p>{Number(item.size_bytes || 0).toLocaleString()} bytes</p></div><button className="secondary-button" onClick={async () => { try { const parsed = await api('/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: item.filename }) }); setParsedRunbook(parsed); setUploadResult({ filename: item.filename, parsed }); setNotice({type:'success',text:`Parsed ${parsed.total_steps ?? parsed.steps?.length ?? 0} step(s) from ${item.filename}.`}); } catch (error) { setNotice({type:'error',text:error.message}); } }}>Preview steps</button></div>)}</> : <EmptyState icon={BookOpen} title={uploaded ? 'Runbook uploaded' : 'Your runbook library starts here'} text="Upload a Markdown runbook to begin. The library refreshes from the backend."/>}{parsedRunbook && <div className="parsed-steps"><div className="panel-heading"><div><h3>Parsed steps · {parsedRunbook.filename}</h3><p>Review these commands before execution.</p></div><span className="soft-tag">{parsedRunbook.total_steps ?? parsedRunbook.steps?.length ?? 0} steps</span></div>{(parsedRunbook.steps_detail || parsedRunbook.steps || []).map(step => <div className="setting-row" key={step.step}><div className="setting-icon"><Terminal size={16}/></div><div><strong>Step {step.step}</strong><p>{step.command}</p></div><span className="soft-tag">{step.risk_level || 'Review'}</span></div>)}</div>}</div></section>}
+        {active === 'Runbooks' && <section className="page-section"><PageHeading title="Runbook library" subtitle="Import and prepare operational playbooks for execution." action={<button className="primary-button" onClick={() => setShowUpload(v => !v)}><Plus size={16}/> Upload runbook</button>}/>{showUpload && <form className="upload-card" onSubmit={uploadRunbook}><div className="upload-drop"><UploadCloud size={26}/><strong>Bring your runbook</strong><span>Markdown files (.md) with numbered operational steps</span><input type="file" accept=".md,text/markdown,text/plain" onChange={e => setFile(e.target.files?.[0] || null)}/>{file && <div className="selected-file"><FileCode2 size={15}/>{file.name}<button type="button" onClick={() => setFile(null)} aria-label="Remove file"><X size={14}/></button></div>}</div><button className="primary-button" disabled={uploading || !file}>{uploading ? <LoaderCircle className="spin" size={16}/> : <UploadCloud size={16}/>} {uploading ? 'Uploading…' : 'Upload and validate'}</button>{uploadResult && <pre className="result-preview">{JSON.stringify(uploadResult, null, 2)}</pre>}</form>}<div className="panel library-empty">{runbooks.length ? <><div className="panel-heading"><div><h3>Available runbooks</h3><p>Files currently stored by the backend</p></div><span className="soft-tag">{runbooks.length} files</span></div>{runbooks.map(item => <div className="setting-row" key={item.filename}><div className="setting-icon"><FileCode2 size={17}/></div><div><strong>{item.filename}</strong><p>{Number(item.size_bytes || 0).toLocaleString()} bytes</p></div><button className="secondary-button" onClick={async () => { try { const parsed = await api('/parse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ filename: item.filename }) }); setParsedRunbook(parsed); setUploadResult({ filename: item.filename, parsed }); setNotice({type:'success',text:`Parsed ${parsed.total_steps ?? parsed.steps?.length ?? 0} step(s) from ${item.filename}.`}); } catch (error) { setNotice({type:'error',text:error.message}); } }}>Preview steps</button></div>)}</> : <EmptyState icon={BookOpen} title={uploaded ? 'Runbook uploaded' : 'Your runbook library starts here'} text="Upload a Markdown runbook to begin. The library refreshes from the backend."/>}{parsedRunbook && <div className="parsed-steps"><div className="panel-heading"><div><h3>Parsed steps · {parsedRunbook.filename}</h3><p>Review these commands before execution.</p></div><span className="soft-tag">{parsedRunbook.total_steps ?? parsedRunbook.steps?.length ?? 0} steps</span></div>{(parsedRunbook.steps_detail || parsedRunbook.steps || []).map(step => <div className="setting-row" key={step.step}><div className="setting-icon"><Terminal size={16}/></div><div><strong>Step {step.step}</strong><p>{step.command}</p></div><span className="soft-tag">{step.risk_level || 'Review'}</span></div>)}<div className="execution-launch"><div><strong>Ready to execute?</strong><p>Commands run on the backend. Risky commands pause for your explicit approval.</p></div><button className="primary-button" disabled={executionBusy || !parsedRunbook.filename} onClick={() => startExecution(parsedRunbook.filename)}>{executionBusy ? <LoaderCircle size={16} className="spin"/> : <Play size={15}/>} Start execution</button></div></div>}</div></section>}
 
-        {active === 'Executions' && <section className="page-section"><PageHeading title="Execution center" subtitle="Observe execution records and investigate failures." action={<button className="secondary-button" onClick={refreshData}><RefreshCw size={15}/> Refresh state</button>}/><div className="panel execution-intro"><div className="execution-icon"><Workflow size={23}/></div><div><h3>Workflow monitor</h3><p>This view uses the records available from your current backend. No execution is started automatically.</p><div className="workflow-steps">{['Runbook input','Validation','Approval gate','Execution','Results'].map((s,i)=><div className="workflow-step" key={s}><span>{String(i+1).padStart(2,'0')}</span><strong>{s}</strong>{i<4&&<ArrowRight size={13}/>}</div>)}</div></div></div><div className="panel"><div className="panel-heading"><div><h3>Execution records</h3><p>Derived from /logs and /report responses</p></div><span className="soft-tag">{logs.length} records</span></div><LogsTable logs={logs}/></div></section>}
+        {active === 'Executions' && <section className="page-section"><PageHeading title="Execution center" subtitle="Observe execution records and investigate failures." action={<button className="secondary-button" onClick={refreshData}><RefreshCw size={15}/> Refresh state</button>}/><div className="panel execution-intro"><div className="execution-icon"><Workflow size={23}/></div><div><h3>Workflow monitor</h3><p>This view uses the records available from your current backend. No execution is started automatically.</p><div className="workflow-steps">{['Runbook input','Validation','Approval gate','Execution','Results'].map((s,i)=><div className="workflow-step" key={s}><span>{String(i+1).padStart(2,'0')}</span><strong>{s}</strong>{i<4&&<ArrowRight size={13}/>}</div>)}</div></div></div><div className="panel"><div className="panel-heading"><div><h3>Execution records</h3><p>Derived from /logs and /report responses</p></div><span className="soft-tag">{logs.length} records</span></div><LogsTable logs={logs}/></div>{executionState && <div className="panel live-execution"><div className="panel-heading"><div><h3>Live execution</h3><p>{executionState.filename || 'Current runbook'} · Session {String(executionState.session_id).slice(0,8)}</p></div><span className={'table-status ' + (executionState.status === 'completed' ? 'success' : executionState.status === 'failed' ? 'danger' : 'neutral')}>{String(executionState.status || 'running').replaceAll('_',' ')}</span></div><div className="execution-progress"><div><span>Progress</span><strong>{executionState.progress_percent ?? 0}%</strong></div><div className="progress-track"><span style={{width: (Math.max(0, Math.min(100, Number(executionState.progress_percent || 0))) + '%')}}/></div><small>Step {executionState.current_step || 0} of {executionState.total_steps || 0}</small></div>{executionState.pending_confirmation && <div className="approval-callout"><div><strong>Approval required · Step {executionState.pending_confirmation.step}</strong><p>{executionState.pending_confirmation.command}</p><small>{executionState.pending_confirmation.message || 'Review this command before allowing it to run.'}</small></div><div className="approval-actions"><button className="secondary-button" disabled={executionBusy} onClick={() => controlExecution('confirm', {step: executionState.pending_confirmation.step, approved:false})}>Skip step</button><button className="primary-button" disabled={executionBusy} onClick={() => controlExecution('confirm', {step: executionState.pending_confirmation.step, approved:true})}><ShieldCheck size={15}/> Approve &amp; run</button></div></div>}<div className="execution-actions">{executionState.status === 'running' && <button className="secondary-button" disabled={executionBusy} onClick={() => controlExecution('pause')}><Pause size={15}/> Pause</button>}{executionState.status === 'paused' && <button className="primary-button" disabled={executionBusy} onClick={() => controlExecution('resume')}><Play size={15}/> Resume</button>}<button className="secondary-button" disabled={executionBusy} onClick={refreshExecutionState}><RefreshCw size={15}/> Refresh state</button></div>{(executionState.results || []).length > 0 && <div className="execution-results">{executionState.results.map(result => <div className="setting-row" key={result.step}><div className="setting-icon"><Terminal size={16}/></div><div><strong>Step {result.step} · {result.command}</strong><p>{result.message || result.stderr || result.stdout || 'No output returned'}</p></div><span className={'table-status ' + (result.status === 'success' ? 'success' : result.status === 'failed' || result.status === 'blocked' ? 'danger' : 'neutral')}>{String(result.status).replaceAll('_',' ')}</span>{result.status === 'failed' && <button className="secondary-button" disabled={executionBusy} onClick={() => controlExecution('retry', {step: result.step})}><RotateCcw size={14}/> Retry</button>}</div>)}</div>}</div>}</section>}
 
         {active === 'Activity logs' && <section className="page-section"><PageHeading title="Activity logs" subtitle="Search and inspect operational events returned by the backend." action={<button className="secondary-button" onClick={refreshData}><RefreshCw size={15}/> Refresh</button>}/><div className="panel"><div className="table-toolbar"><div className="search-box"><Search size={16}/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search activity records…"/></div><span className="soft-tag">{filteredLogs.length} shown</span></div><LogsTable logs={filteredLogs}/></div></section>}
 
