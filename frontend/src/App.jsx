@@ -226,7 +226,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: executionState.session_id, ...extra })
       });
-      if (result.state) setExecutionState(result.state);
+      if (result.state) setExecutionState((action === 'retry' || action === 'resume') ? { ...result.state, status: 'running' } : result.state);
       else await refreshExecutionState();
       setNotice({ type: 'success', text: action === 'confirm' ? (extra.approved ? 'Risky step approved.' : 'Risky step skipped.') : 'Execution ' + action + ' request completed.' });
     } catch (error) {
