@@ -5,6 +5,8 @@ Provides endpoints to upload, parse, execute, log, and report on Markdown runboo
 """
 
 import asyncio
+import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +34,12 @@ from report import generate_pdf_report, generate_report
 
 RUNBOOKS_DIR = Path(__file__).parent / "runbooks"
 RUNBOOKS_DIR.mkdir(parents=True, exist_ok=True)
+MAX_UPLOAD_BYTES = 1_048_576
+RUNBOOK_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,119}\.md$", re.IGNORECASE)
+DEFAULT_CORS_ORIGINS = (
+    "https://runbook-following-agent2.vercel.app,"
+    "http://localhost:5173,http://127.0.0.1:5173"
+)
 
 app = FastAPI(
     title="Runbook Following Agent",
@@ -39,13 +47,29 @@ app = FastAPI(
     version="1.0.0",
 )
 
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", DEFAULT_CORS_ORIGINS).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    """Add baseline browser security headers to API responses."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 # In-memory execution session store
 _sessions: dict[str, dict] = {}
@@ -57,11 +81,24 @@ def _now_iso() -> str:
 
 
 def _get_runbook_path(filename: str) -> Path:
-    safe_name = Path(filename).name
-    path = RUNBOOKS_DIR / safe_name
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Runbook '{safe_name}' not found")
+    if not filename or not RUNBOOK_NAME_PATTERN.fullmatch(filename) or Path(filename).name != filename:
+        raise HTTPException(status_code=400, detail="Invalid runbook filename")
+    workspace = RUNBOOKS_DIR.resolve()
+    path = (RUNBOOKS_DIR / filename).resolve()
+    try:
+        path.relative_to(workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Runbook path must stay inside the runbook workspace") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Runbook '{filename}' not found")
     return path
+
+
+def _validate_session_id(session_id: str) -> str:
+    try:
+        return str(uuid.UUID(session_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid session_id") from exc
 
 
 async def _emit_event(session_id: str, event: dict) -> None:
@@ -110,7 +147,8 @@ async def _run_step(session_id: str, step: RunbookStep, force: bool = False) -> 
     session = _sessions[session_id]
     classification = classify_command(step.command)
 
-    if classification == "disallowed" and not force:
+    # Approval may authorize a risky command, never a disallowed one.
+    if classification == "disallowed":
         result = StepResult(
             step=step.step,
             command=step.command,
@@ -157,7 +195,9 @@ async def _run_step(session_id: str, step: RunbookStep, force: bool = False) -> 
     step.status = StepStatus.RUNNING
     await _emit_event(session_id, {"type": "step_start", "step": step.step, "command": step.command})
 
-    output = await asyncio.to_thread(execute_command, step.command)
+    output = await asyncio.to_thread(
+        execute_command, step.command, str(RUNBOOKS_DIR), allow_risky=force
+    )
     status = StepStatus.SUCCESS if output["success"] else StepStatus.FAILED
 
     result = StepResult(
@@ -263,12 +303,21 @@ async def root():
 @app.post("/upload")
 async def upload_runbook(file: UploadFile = File(...)):
     """Upload a Markdown runbook file."""
-    if not file.filename or not file.filename.endswith(".md"):
-        raise HTTPException(status_code=400, detail="Only .md files are accepted")
-
-    safe_name = Path(file.filename).name
-    dest = RUNBOOKS_DIR / safe_name
-    content = await file.read()
+    if not file.filename or not RUNBOOK_NAME_PATTERN.fullmatch(file.filename) or Path(file.filename).name != file.filename:
+        raise HTTPException(status_code=400, detail="Use a simple .md filename (letters, numbers, spaces, dots, dashes, underscores)")
+    safe_name = file.filename
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Runbook upload exceeds the 1 MiB limit")
+    try:
+        content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Runbook must be UTF-8 encoded Markdown") from exc
+    dest = (RUNBOOKS_DIR / safe_name).resolve()
+    try:
+        dest.relative_to(RUNBOOKS_DIR.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid upload destination") from exc
     dest.write_bytes(content)
 
     return {
@@ -304,9 +353,15 @@ async def start_execution(request: dict):
     path = _get_runbook_path(filename)
     steps = parse_markdown_file(path)
 
-    session_id = request.get("session_id") or str(uuid.uuid4())
+    session_id = _validate_session_id(request.get("session_id")) if request.get("session_id") else str(uuid.uuid4())
     start_from = request.get("start_from_step", 1)
+    if not isinstance(start_from, int) or isinstance(start_from, bool) or start_from < 1:
+        raise HTTPException(status_code=400, detail="start_from_step must be a positive integer")
 
+    if session_id in _sessions and _sessions[session_id].get("filename") != filename:
+        raise HTTPException(status_code=409, detail="Session belongs to a different runbook")
+    if session_id in _sessions and _sessions[session_id].get("status") in {"running", "paused", "waiting_confirmation"}:
+        raise HTTPException(status_code=409, detail="Session is already active")
     if session_id not in _sessions:
         await asyncio.to_thread(create_session_log, session_id, filename)
         _sessions[session_id] = {
@@ -344,6 +399,7 @@ async def start_execution(request: dict):
 @app.post("/execute/confirm")
 async def confirm_risky_step(request: ConfirmRequest):
     """Approve or reject a risky command."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -395,6 +451,7 @@ async def confirm_risky_step(request: ConfirmRequest):
 @app.post("/execute/pause")
 async def pause_execution(request: PauseResumeRequest):
     """Pause an active execution session."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -408,6 +465,7 @@ async def pause_execution(request: PauseResumeRequest):
 @app.post("/execute/resume")
 async def resume_execution(request: PauseResumeRequest):
     """Resume a paused execution session."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -422,6 +480,7 @@ async def resume_execution(request: PauseResumeRequest):
 @app.post("/execute/retry")
 async def retry_step(request: RetryRequest):
     """Retry a failed step."""
+    request.session_id = _validate_session_id(request.session_id)
     session = _sessions.get(request.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -443,6 +502,7 @@ async def retry_step(request: RetryRequest):
 @app.get("/execute/state/{session_id}")
 async def get_execution_state(session_id: str):
     """Get current execution state for polling."""
+    session_id = _validate_session_id(session_id)
     session = _sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -452,6 +512,9 @@ async def get_execution_state(session_id: str):
 @app.get("/execute/stream/{session_id}")
 async def stream_execution(session_id: str):
     """Server-Sent Events stream for live execution updates."""
+    session_id = _validate_session_id(session_id)
+    if session_id not in _sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
     if session_id not in _event_queues:
         _event_queues[session_id] = asyncio.Queue()
 
@@ -476,6 +539,7 @@ async def stream_execution(session_id: str):
 async def get_logs(session_id: Optional[str] = Query(None)):
     """Return execution logs, optionally filtered by session."""
     if session_id:
+        session_id = _validate_session_id(session_id)
         entries = get_session_logs(session_id)
         return {"session_id": session_id, "entries": entries}
 
@@ -485,6 +549,7 @@ async def get_logs(session_id: Optional[str] = Query(None)):
 @app.get("/report")
 async def get_report(session_id: str = Query(...)):
     """Generate execution report for a session."""
+    session_id = _validate_session_id(session_id)
     report = generate_report(session_id)
     if not report:
         raise HTTPException(status_code=404, detail="Report not found for session")
@@ -494,6 +559,7 @@ async def get_report(session_id: str = Query(...)):
 @app.get("/report/pdf")
 async def download_report_pdf(session_id: str = Query(...)):
     """Download execution report as PDF."""
+    session_id = _validate_session_id(session_id)
     pdf_bytes = generate_pdf_report(session_id)
     if not pdf_bytes:
         raise HTTPException(status_code=404, detail="Could not generate PDF report")
