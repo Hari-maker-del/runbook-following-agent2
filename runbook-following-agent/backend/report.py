@@ -21,9 +21,9 @@ def _parse_timestamp(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def generate_report(session_id: str) -> Optional[ReportSummary]:
+def generate_report(session_id: str, owner_id: str = "legacy-admin") -> Optional[ReportSummary]:
     """Build a report summary from session log data."""
-    path = _session_log_path(session_id)
+    path = _session_log_path(session_id, owner_id)
     if not path.exists():
         return None
 
@@ -116,9 +116,9 @@ def generate_report(session_id: str) -> Optional[ReportSummary]:
     )
 
 
-def generate_pdf_report(session_id: str) -> Optional[bytes]:
+def generate_pdf_report(session_id: str, owner_id: str = "legacy-admin") -> Optional[bytes]:
     """Generate a PDF report for download."""
-    summary = generate_report(session_id)
+    summary = generate_report(session_id, owner_id)
     if not summary:
         return None
 
