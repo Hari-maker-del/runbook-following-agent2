@@ -39,5 +39,5 @@ def test_upload_limit_is_one_mib_and_cors_has_no_wildcard():
     assert MAX_UPLOAD_BYTES == 1_048_576
     assert "*" not in DEFAULT_CORS_ORIGINS
     cors = next(m for m in app.user_middleware if m.cls.__name__ == "CORSMiddleware")
-    assert "*" not in cors.options["allow_origins"]
-    assert cors.options["allow_credentials"] is False
+    assert "*" not in cors.kwargs["allow_origins"]
+    assert cors.kwargs["allow_credentials"] is False
