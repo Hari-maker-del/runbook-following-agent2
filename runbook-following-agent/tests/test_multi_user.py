@@ -32,7 +32,7 @@ def test_session_state_is_not_visible_to_another_owner():
     session_id = str(uuid4())
     _sessions[session_id] = {"session_id": session_id, "owner_id": "user:owner-a"}
     try:
-        assert _get_owned_session(session_id, "user:owner-a")["_sessions" if False else "session_id"] == session_id
+        assert _get_owned_session(session_id, "user:owner-a")["session_id"] == session_id
         with pytest.raises(HTTPException) as exc:
             _get_owned_session(session_id, "user:owner-b")
         assert exc.value.status_code == 404
